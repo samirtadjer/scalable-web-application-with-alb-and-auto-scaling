@@ -2,11 +2,29 @@
 
 A production-grade, highly available and scalable web application on AWS using EC2 in a multi-AZ VPC, fronted by CloudFront, WAF and an Application Load Balancer, with a Multi-AZ RDS database and bastion-free access through Systems Manager.
 
+## Contents
+
+- [1. Solution Architecture](#1-solution-architecture)
+- [2. AWS Services Used](#2-aws-services-used)
+- [3. Network Design](#3-network-design)
+- [4. Compute and Scaling](#4-compute-and-scaling)
+- [5. Security](#5-security)
+- [6. High Availability and Resilience](#6-high-availability-and-resilience)
+- [7. Monitoring and Alerting](#7-monitoring-and-alerting)
+- [8. Deployment Steps (AWS Console)](#8-deployment-steps-aws-console)
+- [9. Cost Considerations](#9-cost-considerations)
+- [10. Cleanup](#10-cleanup)
+- [11. Learning Outcomes Achieved](#11-learning-outcomes-achieved)
+- [12. Repository Structure](#12-repository-structure)
+- [13. Author](#13-author)
+
 ---
 
 ## 1. Solution Architecture
 
 ![Architecture Diagram](architecture-diagram.png)
+
+*Figure 1 — Multi-AZ architecture with public, private app and private DB tiers.*
 
 ### Request flow
 1. A user resolves the domain through **Route 53** (alias record + health checks).
@@ -18,6 +36,8 @@ A production-grade, highly available and scalable web application on AWS using E
 7. Outbound traffic (patches, package installs) goes through a **NAT Gateway** per AZ.
 8. Admins reach instances only via **Systems Manager Session Manager** (no SSH, no bastion, no open port 22).
 9. **CloudWatch** collects metrics and logs; alarms notify the team through **SNS**.
+
+> **Route 53 note:** the public alias record points to the CloudFront distribution, with the ALB as the origin. If CloudFront is omitted, point the alias directly to the ALB.
 
 ---
 
@@ -35,9 +55,12 @@ A production-grade, highly available and scalable web application on AWS using E
 | **CloudFront** | CDN caching static assets, TLS termination, reduced latency |
 | **S3** | Static asset origin (private, accessed via Origin Access Control) |
 | **RDS Multi-AZ** | MySQL/PostgreSQL with synchronous standby and automatic failover |
-| **Route 53** | Alias record to CloudFront/ALB, health checks |
+| **Route 53** | Alias record to CloudFront (ALB origin), health checks |
 | **Systems Manager** | Session Manager for secure shell access |
 | **CloudWatch + SNS** | Dashboards, alarms, email/SMS notifications |
+| **ACM** | TLS certificates for CloudFront and the ALB |
+| **KMS** | Encryption at rest for RDS and EBS |
+| **Secrets Manager** | Database credentials (or SSM Parameter Store) |
 | **IAM** | Instance profile with `AmazonSSMManagedInstanceCore`, least privilege |
 
 ---
@@ -80,7 +103,8 @@ A production-grade, highly available and scalable web application on AWS using E
 - **Scaling policies:**
   - *Target tracking:* average CPU at 50%.
   - *Target tracking:* `ALBRequestCountPerTarget` at 1000.
-  - *Step scaling (optional):* +2 instances when CPU > 80% for 2 minutes, -1 when CPU < 30%.
+  - *Step scaling:* +2 instances when CPU > 80% for 2 minutes, -1 when CPU < 30%.
+- **ALB listeners:** HTTP `:80` redirects to HTTPS `:443`; HTTPS `:443` forwards to the app target group. **AWS WAF** is associated with the ALB.
 - **ALB target group:** health check `GET /health`, healthy threshold 3, unhealthy threshold 2, interval 15s, deregistration delay 30s.
 
 ---
@@ -113,6 +137,8 @@ A production-grade, highly available and scalable web application on AWS using E
 
 **CloudWatch dashboard** widgets: ALB request count and 5xx, target response time, healthy host count, ASG instance count, EC2 CPU, RDS CPU / connections / free storage, CloudFront cache hit rate.
 
+OS-level logs and memory/disk metrics require the **CloudWatch agent**; the instance profile includes `CloudWatchAgentServerPolicy`, and the agent can be installed through user data or SSM.
+
 **Alarms -> SNS topic -> email subscription:**
 
 | Alarm | Condition |
@@ -128,6 +154,8 @@ A production-grade, highly available and scalable web application on AWS using E
 
 ## 8. Deployment Steps (AWS Console)
 
+**Prerequisites:** an AWS account with permissions for VPC, EC2, RDS, CloudFront, WAF, Route 53 and IAM; a registered domain and public hosted zone (optional when testing through the ALB DNS name); and ACM certificates in `us-east-1` for CloudFront and in the ALB region for the ALB.
+
 1. **VPC:** create VPC, 6 subnets, IGW, 2 NAT Gateways, route tables, NACLs.
 2. **Security Groups:** `alb-sg`, `app-sg`, `db-sg`.
 3. **IAM:** create role `EC2-SSM-Role` with `AmazonSSMManagedInstanceCore` and `CloudWatchAgentServerPolicy`.
@@ -139,7 +167,6 @@ A production-grade, highly available and scalable web application on AWS using E
 9. **S3 + CloudFront:** private bucket for static assets, distribution with two origins (S3 for `/static/*`, ALB for default), ACM certificate.
 10. **Route 53:** alias A record to the CloudFront distribution, add health check.
 11. **CloudWatch + SNS:** create topic, confirm email subscription, create alarms and dashboard.
-12. **Test** (section 9).
 
 ### Sample user data
 ```bash
@@ -157,34 +184,19 @@ PHP
 
 ---
 
-## 9. Testing and Validation
-
-| Test | How | Expected result |
-|---|---|---|
-| Load balancing | Refresh the site repeatedly | Hostname alternates between instances in both AZs |
-| Auto Scaling | `sudo dnf install -y stress && stress --cpu 4 --timeout 600` via Session Manager | New instances launch when CPU > 50% |
-| Self-healing | Terminate an instance | ASG launches a replacement |
-| RDS failover | Reboot with failover | App recovers after ~1-2 min |
-| WAF | `curl "https://yourdomain/?id=1' OR '1'='1"` | HTTP 403 |
-| Caching | `curl -I https://yourdomain/static/logo.png` twice | `X-Cache: Hit from cloudfront` |
-| No SSH | Try `ssh` to an instance | No route, connection refused; use Session Manager |
-| Alerts | Trigger an alarm | SNS email received |
-
----
-
-## 10. Cost Considerations
+## 9. Cost Considerations
 
 Main cost drivers: **2 NAT Gateways**, **ALB**, **RDS Multi-AZ**, EC2 instances and **WAF**. To reduce cost in a learning environment use a single NAT Gateway, `db.t3.micro`, and **delete all resources after the demo**. Use AWS Budgets to set an alert.
 
 ---
 
-## 11. Cleanup
+## 10. Cleanup
 
 Delete in this order: Route 53 records -> CloudFront -> WAF -> ASG -> ALB and target groups -> RDS (disable deletion protection) -> NAT Gateways and release Elastic IPs -> VPC -> S3 bucket -> CloudWatch alarms and SNS topic.
 
 ---
 
-## 12. Learning Outcomes Achieved
+## 11. Learning Outcomes Achieved
 
 - Designed a VPC with correct subnet, route table and NAT Gateway configuration.
 - Built a highly available architecture across two Availability Zones.
@@ -195,7 +207,7 @@ Delete in this order: Route 53 records -> CloudFront -> WAF -> ASG -> ALB and ta
 
 ---
 
-## 13. Repository Structure
+## 12. Repository Structure
 
 ```
 .
@@ -203,11 +215,6 @@ Delete in this order: Route 53 records -> CloudFront -> WAF -> ASG -> ALB and ta
 └── architecture-diagram.png
 ```
 
-## 14. Demo (optional)
+## 13. Author
 
-- Live URL: _add your URL here_
-- Video: _add your video link here_
-
-## 15. Author
-
-_ Samir Tadjer
+[Samir Tadjer](https://github.com/samirtadjer)
