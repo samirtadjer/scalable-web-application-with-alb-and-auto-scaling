@@ -210,4 +210,4 @@ Delete in this order: Route 53 records -> CloudFront -> WAF -> ASG -> ALB and ta
 
 ## 15. Author
 
-_Your name · AWS Cloud Graduation Project_
+_Samir Tadjer
