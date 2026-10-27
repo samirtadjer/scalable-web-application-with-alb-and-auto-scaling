@@ -6,9 +6,7 @@ A production-grade, highly available and scalable web application on AWS using E
 
 ## 1. Solution Architecture
 
-![Architecture Diagram](architecture/architecture-diagram.png)
-
-> Regenerate the diagram with `pip install diagrams && python architecture/generate_diagram.py` (requires Graphviz).
+![Architecture Diagram](architecture-diagram.png)
 
 ### Request flow
 1. A user resolves the domain through **Route 53** (alias record + health checks).
@@ -202,9 +200,7 @@ Delete in this order: Route 53 records -> CloudFront -> WAF -> ASG -> ALB and ta
 ```
 .
 ├── README.md
-└── architecture/
-    ├── architecture-diagram.png
-    └── generate_diagram.py
+└── architecture-diagram.png
 ```
 
 ## 14. Demo (optional)
